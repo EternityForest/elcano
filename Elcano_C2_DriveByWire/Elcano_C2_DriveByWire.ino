@@ -7,7 +7,7 @@
 
 #define MEGA
 #define STEP_SIZE_ms 5
-#define TEST_MODE
+//#define TEST_MODE
 #ifndef TRUE
 #define TRUE 1
 #define FALSE 0
@@ -144,6 +144,7 @@ public:
   int QuiescentCurrent;  // Nominally 120 counts
   int CurrentDraw;  // In counts, with 1 Amp = 12 counts
   int CurrentLimit;  // In counts
+  int nextTimeToService;//The next time in millis that the service routine will act
   // One count from analog input is about 5mV from ACS758lcb050U
   // The ACS758 has sensitivity of 60 mA/V
   //This does not actually move TO a position, it moves a distance of StepSize towards the position.
@@ -180,34 +181,34 @@ public:
     Serial.println(PWMPosition);
     return Position;
   }
-  //--Currently non-functioning, is a no-op--
-  //Actually go to a position and block util there
-  void home(int desired_position)
+  //move one step towards last commanded.
+  int service()
   {
-    return;
-    int feedback_after, Position;
-    int no_move_count = 0;
-    //Loop while not CloseEnough
-    do
-    {
-      Serial.print("Home ");
-      Position = move (desired_position);
-      delay(STEP_SIZE_ms);
-      feedback_after = analogRead(FeedbackPin);
-      //If we detect that we have not moved, increment safety counter
-      //Otherwise reset to zero.
-      //If somehow it just moved back and forth but never got there
-      //This could block forever.
-      if (abs(feedback_after - Feedback) <= CloseEnough)
-        no_move_count++;
-      else
+	//This will always attempt to service once per interval, however if it misses an interval it may
+	//have two intervals in rapid sucession to catch up. I don't know if this is a problem.
+	unsigned int now = millis();
+        /*unsigned long mintime,nexttime;
+        Serial.print("{}");
+        Serial.print(nextTimeToService);
+        Serial.print(",");
+        Serial.print(now);
+        Serial.print("}");*/
+        
+	if (now>nextTimeToService)
+	{
+          Serial.print("service");
+	  //nextTimeToService always increments by a fixed amount. suppose the current time starts at zero and so does nexttimetoservice.
+	  //suppose the interval is 5. at t=1 the event fires and nexttimetoservice is set to 5. now suppose we wait till t=7 to check.
+	  //the event fires at t=7 but nexttime is set to 10. the event will fire again at t=11. There will be some short-term jitter,
+	  //but the average interval of any two firings should be correct. An event will only fire sooner if it waited too long last time.
+	  //The reason for the max statement is so that nextTimeToService can't get "wound up" if it is not serviced for many seconds.
+         unsigned long mintime = now-STEP_SIZE_ms; //Limit windup
+         unsigned long nexttime = STEP_SIZE_ms + nextTimeToService;
+	 nextTimeToService = max(mintime,nexttime);
+	  //Move a step towards the most recent commanded position
+	  move (LastCommand);
 
-          no_move_count = 0;
-      //Return if we are stuck []Return error code?
-      if (no_move_count > Stuck)
-        return;
-    } 
-    while ((abs(desired_position - Feedback) > CloseEnough));
+   }
   }
 } 
 Instrument[3];
@@ -315,7 +316,6 @@ void initialize()
   // Otherwise, there is a possibility of blowing a fuse if servos try to
   // get to this state too quickly.
   Instrument[Steering].LastCommand = Straight;
-  Instrument[Steering].home(Straight);
   Instrument[Motor].State = CruiseStop;
   Instrument[Brakes].State = CruiseStop;
   Instrument[Steering].State = CruiseStop;
@@ -388,8 +388,8 @@ void Halt()
   Instrument[Motor].LastCommand = Off;
   Instrument[Brakes].LastCommand = FullBrake;
   // TODO: make motor off and brakes on simultaneous.
-  Instrument[Motor].home(Off);
-  Instrument[Brakes].home(FullBrake);
+  Instrument[Motor].LastCommand = Off;
+  Instrument[Brakes].LastCommand = FullBrake;
   digitalWrite(StopLED, HIGH);
 }
 
@@ -403,12 +403,17 @@ void loop()
   static unsigned long EndTime = 0;
   static unsigned long OutsideTime;
 
-  //Calculate how much time was spent outside the loop
-  OutsideTime = EndTime - TimeNow;
   //Read the user inputs for the enable switches
   Instrument[Motor].Enabled = digitalRead(EnableMotor);
   Instrument[Brakes].Enabled = digitalRead(EnableBrake);
   Instrument[Steering].Enabled = digitalRead(EnableSteer);
+  
+
+ //Service the insturments. The service routine manages moving at the proper rate
+//toward a destination
+  Instrument[Motor].service();
+  Instrument[Brakes].service();
+  Instrument[Steering].service();
 #ifdef TEST_MODE
   //  testSwitches();
   //  testRamp();
@@ -483,16 +488,10 @@ void loop()
   checkReverse();  //Logic to handle the reverse button.
 #endif  // TEST_MODE
   // TODO: Check out loop speed;
-  // make loop faster
-  // limit servo motion during loop to step size
   unsigned long fred = millis();
   //  Serial.print(fred - TimeNow);
   //  Serial.print(",");
-  do  //  Delay so that loop is not faster than 10 Hz.
-  {
-    EndTime = millis();
-  } 
-  while (EndTime < NextLoopTime_ms);
+ 
   //  Serial.print(EndTime - fred);
   //  Serial.print(",");
   //  Serial.print(NextLoopTime_ms);
